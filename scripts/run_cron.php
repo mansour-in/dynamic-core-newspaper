@@ -11,7 +11,7 @@ use CoreNewspaper\Services\CronService;
 use CoreNewspaper\Services\Logger;
 use CoreNewspaper\Services\ProviderService;
 
-require_once __DIR__ . '/../vendor/autoload.php';
+require_once __DIR__ . '/../autoload.php';
 
 Env::load(__DIR__ . '/../.env');
 $config = new Config();
