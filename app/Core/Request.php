@@ -6,14 +6,17 @@ namespace CoreNewspaper\Core;
 
 final class Request
 {
+    private array $session;
+
     public function __construct(
         private readonly array $get,
         private readonly array $post,
         private readonly array $server,
         private readonly array $cookies,
         private readonly array $files,
-        private readonly array &$session
+        array &$session
     ) {
+        $this->session =& $session;
     }
 
     public static function fromGlobals(): self
