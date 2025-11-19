@@ -1,9 +1,5 @@
 RewriteEngine On
-RewriteCond %{HTTPS} off
-RewriteRule (.*) https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
-
-RewriteCond %{REQUEST_FILENAME} -f [OR]
-RewriteCond %{REQUEST_FILENAME} -d
-RewriteRule ^ - [L]
-
-RewriteRule ^ index.php [L]
+RewriteCond %{REQUEST_URI} !^/health$
+RewriteCond %{REQUEST_URI} !^/version$
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteRule ^ index.php [QSA,L]

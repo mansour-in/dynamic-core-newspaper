@@ -2,80 +2,80 @@
 
 declare(strict_types=1);
 
-use CoreNewspaper\Controllers\AdminAuthController;
-use CoreNewspaper\Controllers\AdminCronController;
-use CoreNewspaper\Controllers\AdminProviderController;
-use CoreNewspaper\Controllers\RedirectController;
-use CoreNewspaper\Core\Config;
-use CoreNewspaper\Core\Database;
-use CoreNewspaper\Core\Env;
-use CoreNewspaper\Core\Request;
-use CoreNewspaper\Core\Router;
-use CoreNewspaper\Repositories\CronRepository;
-use CoreNewspaper\Repositories\ProviderRepository;
-use CoreNewspaper\Security\Csrf;
-use CoreNewspaper\Security\LoginRateLimiter;
-use CoreNewspaper\Security\SessionManager;
-use CoreNewspaper\Services\AuthService;
-use CoreNewspaper\Services\Logger;
-use CoreNewspaper\Services\ProviderService;
-use CoreNewspaper\Services\CronService;
-use RuntimeException;
-use Throwable;
+use App\Redirector;
+use App\Responder;
 
-require_once __DIR__ . '/../autoload.php';
+require __DIR__ . '/../src/Redirector.php';
+require __DIR__ . '/../src/Responder.php';
 
-Env::load(__DIR__ . '/../.env');
-$config = new Config();
-$timezone = $config->get('app.timezone', 'Asia/Riyadh');
-date_default_timezone_set($timezone);
+$appConfig = require __DIR__ . '/../config/app.php';
+$providers = require __DIR__ . '/../config/providers.php';
 
-$sessionManager = new SessionManager($config);
-$sessionManager->start();
+if (!is_array($appConfig) || !is_array($providers)) {
+    Responder::error('Configuration files are invalid.');
+    exit;
+}
 
-$request = Request::fromGlobals();
+$timezoneId = $appConfig['APP_TIMEZONE'] ?? 'Asia/Riyadh';
+if (!is_string($timezoneId) || $timezoneId === '') {
+    $timezoneId = 'Asia/Riyadh';
+}
 
-$hstsMaxAge = $config->get('security.hsts_max_age', 31536000);
-header('Strict-Transport-Security: max-age=' . $hstsMaxAge . '; includeSubDomains');
-header('X-Frame-Options: SAMEORIGIN');
-header('X-Content-Type-Options: nosniff');
-
-$database = new Database($config);
-$providerRepository = new ProviderRepository($database);
-$cronRepository = new CronRepository($database);
-$providerService = new ProviderService();
-$appLogger = new Logger($config->get('log.app'));
-$cronLogger = new Logger($config->get('log.cron'));
-$authService = new AuthService($database);
-$csrf = new Csrf();
-$rateLimiter = new LoginRateLimiter();
-$cronService = new CronService($providerRepository, $cronRepository, $providerService, $config, $appLogger, $cronLogger);
-
-$router = new Router();
-
-$adminAuthController = new AdminAuthController($authService, $csrf, $sessionManager, $rateLimiter, $appLogger);
-$adminProviderController = new AdminProviderController($authService, $providerRepository, $providerService, $csrf, $appLogger);
-$adminCronController = new AdminCronController($authService, $cronRepository, $csrf);
-$redirectController = new RedirectController($providerRepository, $providerService, $appLogger);
-
-$router->get('/admin/login', [$adminAuthController, 'showLogin']);
-$router->post('/admin/login', [$adminAuthController, 'login']);
-$router->post('/admin/logout', [$adminAuthController, 'logout']);
-$router->get('/admin/providers', [$adminProviderController, 'index']);
-$router->get('/admin/providers/{id}', [$adminProviderController, 'edit']);
-$router->post('/admin/providers/{id}', [$adminProviderController, 'update']);
-$router->get('/admin/cron-history', [$adminCronController, 'index']);
-
-$router->get('/{slug}', function ($request, $slug) use ($redirectController) {
-    $redirectController->__invoke($slug);
-});
+if (!@date_default_timezone_set($timezoneId)) {
+    Responder::error('Invalid timezone configured.');
+    exit;
+}
 
 try {
-    $router->dispatch($request);
-} catch (RuntimeException $e) {
-    http_response_code(404);
-    include __DIR__ . '/../views/errors/404.php';
-} catch (Throwable $e) {
-    http_response_code(500);
-    include __DIR__ . '/../views/errors/500.php';
+    $now = new \DateTimeImmutable('now', new \DateTimeZone($timezoneId));
+} catch (\Throwable $exception) {
+    Responder::error('Unable to establish timezone context.');
+    exit;
 }
+
+$uri = $_SERVER['REQUEST_URI'] ?? '/';
+$path = parse_url($uri, PHP_URL_PATH) ?? '/';
+$path = trim($path, '/');
+
+if ($path === 'health') {
+    Responder::health();
+    exit;
+}
+
+if ($path === 'version') {
+    $version = (string) ($appConfig['VERSION'] ?? '0.0.0');
+    Responder::version($version);
+    exit;
+}
+
+if ($path === '') {
+    Responder::notFound('Provider not specified.');
+    exit;
+}
+
+if (!isset($providers[$path]) || empty($providers[$path]['active'])) {
+    Responder::notFound('Provider not found or inactive.');
+    exit;
+}
+
+$provider = $providers[$path];
+
+try {
+    $targetUrl = Redirector::build($provider, $now);
+} catch (\Throwable $exception) {
+    Responder::error('Provider configuration error.');
+    exit;
+}
+
+$logPath = $appConfig['LOG_PATH'] ?? null;
+if (is_string($logPath) && $logPath !== '') {
+    $logEntry = sprintf(
+        "%s\t%s\t%s\n",
+        $now->format(\DateTimeImmutable::ATOM),
+        $provider['slug'] ?? $path,
+        $targetUrl
+    );
+    @file_put_contents($logPath, $logEntry, FILE_APPEND | LOCK_EX);
+}
+
+Responder::redirect($targetUrl);

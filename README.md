@@ -1,107 +1,50 @@
-# CORE Newspaper QR Redirector
+# CORE Newspaper Redirector (Phase 1)
 
-A lightweight PHP 8.2 application that manages permanent redirect endpoints for newspaper QR codes and provides an admin interface to maintain issue URLs. Built for LAMP deployments on Ubuntu 22.04 with Apache 2.4, MySQL 8, and PHP 8.2+.
+A minimal PHP 8.2 application that exposes stable provider endpoints such as `/okaz` and `/arabnews`. Each provider immediately 302-redirects to its most recent issue URL according to simple pattern rules (date, numeric sequence, or monthly slug). Configuration lives entirely in flat files under `config/`.
 
-## Features
-- Pattern-based redirect engine (daily date, numeric sequence, monthly slug).
-- Secure admin panel with role-based access, CSRF protection, and login throttling.
-- Provider audit log and cron execution history.
-- Daily cron job automation with append-only logging and optional URL probing.
-- Comprehensive operational runbooks and automated tests.
+## Project Structure
+```
+config/
+  app.php          # Environment + logging configuration
+  providers.php    # Provider definitions (slug, template, etc.)
+logs/
+  app.log          # Optional redirect log (if writable)
+public/
+  index.php        # Front controller and router
+  .htaccess        # Routes all requests to index.php (except health/version)
+src/
+  Redirector.php   # Computes target URL for a provider
+  Responder.php    # Small response helpers (302/404/500)
+```
 
-## Prerequisites
-- Ubuntu 22.04 LTS or compatible Linux.
-- Apache HTTPD 2.4 with `mod_rewrite` and `mod_headers`.
-- PHP 8.2 with extensions: `pdo_mysql`, `mbstring`, `json`, `openssl`, `ctype`.
-- MySQL 8.x server.
-- Composer 2.x.
+## Requirements
+- PHP 8.2 with `mbstring`, `curl`, `json`, `xml`, and `zip` extensions.
+- Apache 2.4 with `mod_rewrite` enabled.
+- System timezone set to `Asia/Riyadh` (also enforced in PHP at runtime).
+- `logs/` directory writable by the Apache user if redirect logging is desired.
 
 ## Installation
-1. Clone the repository:
+1. Copy the repository to `/var/www/dynamic-core-newspaper` (or preferred path).
+2. Ensure `logs/` exists and Apache can write to it:
    ```bash
-   git clone https://example.com/core/newspaper-redirector.git
-   cd newspaper-redirector
+   mkdir -p /var/www/dynamic-core-newspaper/logs
+   chown -R www-data:www-data /var/www/dynamic-core-newspaper
+   chmod -R 750 /var/www/dynamic-core-newspaper
    ```
-2. Install dependencies:
-   ```bash
-   composer install --no-dev --optimize-autoloader
-   ```
-3. Copy environment file and configure values:
-   ```bash
-   cp .env.example .env
-   nano .env
-   ```
-4. Initialize database schema and seed providers:
-   ```bash
-   mysql -u root -p < sql/001_init.sql
-   mysql -u root -p < sql/010_seed_providers.sql
-   ```
-5. Provision an admin account (`docs/admin.md`).
-6. Ensure `logs/` directory is writable by the web server user.
+3. Configure Apache to point the vhost document root to `/var/www/dynamic-core-newspaper/public` and allow overrides.
+4. Adjust `config/providers.php` to match your providers. Supported `pattern_type` values:
+   - `date`: Uses `{YYYY}`, `{MM}`, `{DD}` (KSA timezone).
+   - `sequence`: Uses `{ISSUE_ID}` from `current_issue`.
+   - `monthly`: Uses `{MM_slug}` (english month in lowercase) and `{YYYY}`.
+5. (Optional) Update `config/app.php` to change the version or disable logging by setting `LOG_PATH` to `null`.
 
-## Apache Virtual Host Example
+## Health & Smoke Tests
+With Apache running:
+```bash
+curl -i http://newspaper.core.fit/health      # should return 200 OK
+curl -i http://newspaper.core.fit/version     # prints version string
+curl -i http://newspaper.core.fit/okaz        # 302 with YYYY/MM/DD in Location
+curl -i http://newspaper.core.fit/arabnews    # 302 with ISSUE_ID from config
+curl -i http://newspaper.core.fit/ring        # 302 with {mm_slug}_{YYYY}
 ```
-<VirtualHost *:80>
-    ServerName newspaper.core.fit
-    Redirect permanent / https://newspaper.core.fit/
-</VirtualHost>
-
-<VirtualHost *:443>
-    ServerName newspaper.core.fit
-    DocumentRoot /var/www/newspaper.core.fit/public
-
-    <Directory /var/www/newspaper.core.fit/public>
-        AllowOverride All
-        Require all granted
-    </Directory>
-
-    ErrorLog ${APACHE_LOG_DIR}/newspaper-error.log
-    CustomLog ${APACHE_LOG_DIR}/newspaper-access.log combined
-
-    Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains"
-    SSLEngine on
-    SSLCertificateFile /etc/letsencrypt/live/newspaper.core.fit/fullchain.pem
-    SSLCertificateKeyFile /etc/letsencrypt/live/newspaper.core.fit/privkey.pem
-</VirtualHost>
-```
-
-## Cron Setup
-See `docs/cron.md` for scheduling details. The crontab entry should be:
-```
-5 0 * * * /usr/bin/php /var/www/newspaper.core.fit/scripts/run_cron.php >> /var/www/newspaper.core.fit/logs/cron.log 2>&1
-```
-
-## Environment Variables
-See `.env.example` for documented configuration keys:
-- Database credentials (`DB_HOST`, `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD`).
-- Session settings (`SESSION_NAME`, `SESSION_SAMESITE`).
-- Feature flags (`SEQUENCE_STRATEGY`, `PROBE_ENABLED`).
-- Log file paths (`LOG_PATH`, `CRON_LOG_PATH`).
-
-## Smoke Tests
-After deployment:
-1. Visit `/admin/login`, authenticate with admin credentials.
-2. Confirm `/admin/providers` lists all providers.
-3. Update the sequence provider issue ID and verify redirect changes immediately.
-4. Hit `/okaz`, `/arabnews`, `/ring` and confirm 302 responses to computed URLs.
-5. Run `php scripts/run_cron.php` and verify a new cron history entry appears.
-
-## Development
-- Run unit tests: `vendor/bin/phpunit`
-- Coding standards: `vendor/bin/phpcs --standard=PSR12 app`
-- Static analysis: `vendor/bin/phpstan analyse app --level=5`
-
-## Troubleshooting
-- Enable `APP_DEBUG=true` in `.env` for verbose logging (never in production).
-- Check `logs/app.log` and `logs/cron.log` for errors.
-- Ensure database user has only necessary privileges (SELECT/INSERT/UPDATE/DELETE on application tables).
-- Verify system timezone matches `APP_TIMEZONE`.
-
-## Documentation
-Operational guides are located in the `docs/` directory:
-- `deploy.md`
-- `cron.md`
-- `backup.md`
-- `admin.md`
-- `acceptance.md`
-- `changelog.md`
+Unknown or inactive providers respond with HTTP 404. Configuration errors return HTTP 500 with a short HTML body. Access logs are handled by Apache; redirect summaries are appended to `logs/app.log` if the path is writable.
